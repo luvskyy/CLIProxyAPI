@@ -123,6 +123,15 @@ access:
     - "your-api-key-2"
     - "your-api-key-3"
 
+  # Optional provider credential scoping by client API key. When a provider is listed, only the
+  # listed client keys may use credentials of that provider (OAuth files and, for that provider
+  # family, its api-keys entries such as api-keys.claude). Other client keys never route to those
+  # credentials: mixed-provider models fall back to other providers, otherwise the request fails
+  # with 403, and the provider's models are hidden from their model lists.
+  # Providers that are not listed remain available to every client key.
+  # provider-key-scopes:
+  #   claude: ["your-api-key-1"]
+
 # Optional credential concurrency and observation contracts.
 
 # credentials:
@@ -1214,6 +1223,28 @@ observability:
     # The local Redis RESP usage output is disabled.
     # Default: 60. Max: 3600.
     redis-usage-queue-retention-seconds: 60
+
+  # Optional ClickHouse sink. Every proxied request is written to the "usage" table (provider,
+  # model, credential, client_key_id, tokens, latency, failures, redacted upstream response
+  # headers such as rate-limit headers). With capture-bodies, client/upstream request and response
+  # bodies are written to the "bodies" table, joined on request_id. Bodies are captured even when
+  # request-log is false, and no files are written for them. Raw client API keys are never stored
+  # (client_key_id is the first 12 hex chars of sha256(key)); credential headers are redacted.
+  # Writes are asynchronous and never block or fail proxied requests; rows are dropped and counted
+  # when the queue is full. Database and tables are created on startup when missing.
+  # Changes are applied on config hot reload (the sink restarts after flushing buffered rows).
+  clickhouse:
+    enabled: false
+    endpoint: "http://127.0.0.1:8123" # ClickHouse HTTP interface
+    database: "cliproxy"
+    username: "default"
+    password-env: "CLICKHOUSE_PASSWORD" # password is read from this env var, never from YAML
+    capture-bodies: true
+    max-body-bytes: 1048576 # truncate each body field
+    body-retention-days: 30 # TTL on the bodies table; usage rows are kept forever
+    batch-size: 200
+    flush-interval: "2s"
+    queue-size: 10000
 
   # Enable pprof HTTP debug server (host:port). Keep it bound to localhost for safety.
   pprof:

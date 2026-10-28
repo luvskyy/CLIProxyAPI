@@ -129,6 +129,10 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	ctx, normalized, errScope := m.applyProviderKeyScopes(ctx, normalized)
+	if errScope != nil {
+		return cliproxyexecutor.Response{}, errScope
+	}
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, false)
 		return resp, unwrapExecutionBoundaryError(errHome)
@@ -191,6 +195,10 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	ctx, normalized, errScope := m.applyProviderKeyScopes(ctx, normalized)
+	if errScope != nil {
+		return cliproxyexecutor.Response{}, errScope
+	}
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true)
 		return resp, unwrapExecutionBoundaryError(errHome)
@@ -250,6 +258,10 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	}
+	ctx, normalized, errScope := m.applyProviderKeyScopes(ctx, normalized)
+	if errScope != nil {
+		return nil, errScope
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()

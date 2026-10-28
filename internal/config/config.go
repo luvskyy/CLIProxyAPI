@@ -209,4 +209,35 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// ClickHouse configures the optional ClickHouse usage and body sink
+	// (YAML: observability.clickhouse).
+	ClickHouse ClickHouseConfig `yaml:"clickhouse" json:"clickhouse"`
+}
+
+// ClickHouseConfig configures the ClickHouse request/usage sink.
+type ClickHouseConfig struct {
+	// Enabled turns the sink on.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Endpoint is the ClickHouse HTTP interface base URL.
+	Endpoint string `yaml:"endpoint" json:"endpoint"`
+	// Database is the target database, created on startup when missing.
+	Database string `yaml:"database" json:"database"`
+	// Username is the ClickHouse user.
+	Username string `yaml:"username" json:"username"`
+	// PasswordEnv names the environment variable holding the password.
+	// Passwords are never read from YAML.
+	PasswordEnv string `yaml:"password-env" json:"password-env"`
+	// CaptureBodies stores request/response bodies in the bodies table.
+	CaptureBodies bool `yaml:"capture-bodies" json:"capture-bodies"`
+	// MaxBodyBytes truncates each stored body field.
+	MaxBodyBytes int `yaml:"max-body-bytes" json:"max-body-bytes"`
+	// BodyRetentionDays sets the TTL of the bodies table.
+	BodyRetentionDays int `yaml:"body-retention-days" json:"body-retention-days"`
+	// BatchSize is the maximum number of rows per INSERT.
+	BatchSize int `yaml:"batch-size" json:"batch-size"`
+	// FlushInterval is the maximum time rows wait before being flushed (e.g. "2s").
+	FlushInterval string `yaml:"flush-interval" json:"flush-interval"`
+	// QueueSize bounds buffered rows; rows are dropped and counted when full.
+	QueueSize int `yaml:"queue-size" json:"queue-size"`
 }

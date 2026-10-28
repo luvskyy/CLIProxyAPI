@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
@@ -198,6 +199,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	engine.Use(corsMiddleware())
 	engine.Use(s.responseCompressionMiddleware())
+	// Registered inside compression so captured response bodies are uncompressed.
+	clickhouse.Apply(cfg)
+	engine.Use(clickhouse.CaptureMiddleware())
 	openai.SetResponsesWebsocketCompressionEnabled(cfg.Codex.WebsocketCompressionEnabled())
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))

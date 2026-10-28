@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -390,6 +391,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+		if errClickHouse := clickhouse.Shutdown(ctx); errClickHouse != nil {
+			log.WithError(errClickHouse).Warn("clickhouse sink did not flush before shutdown deadline")
+		}
 	})
 	return shutdownErr
 }
