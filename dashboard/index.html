@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLIProxy usage</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ec; --mute:#8b93a5; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f6f7f9; --panel:#fff; --line:#e3e6eb; --text:#1d2129; --mute:#646c7a; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--mute); margin:0 0 10px; font-weight:600; }
+  main { padding:18px 20px; display:grid; gap:18px; max-width:1500px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; overflow:auto; }
+  .ranges button { background:none; border:1px solid var(--line); color:var(--text); padding:4px 10px; border-radius:6px; cursor:pointer; }
+  .ranges button.on { background:var(--text); color:var(--bg); }
+  .spacer { flex:1; } .mute { color:var(--mute); font-size:12px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; }
+  .stat .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; } .stat .k { color:var(--mute); font-size:12px; }
+  .creds { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
+  .cred { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .cred .top { display:flex; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .meter { margin:6px 0; } .meter .lab { display:flex; justify-content:space-between; font-size:12px; color:var(--mute); }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:3px; } .bar > i { display:block; height:100%; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; } th { color:var(--mute); font-weight:500; font-size:12px; }
+  td.n, th.n { text-align:right; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); }
+  .bad { color:var(--bad); } .ok { color:var(--ok); }
+  details summary { cursor:pointer; color:var(--mute); font-size:12px; } details pre { font-size:11px; white-space:pre-wrap; color:var(--mute); }
+  svg text { fill:var(--mute); font-size:11px; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--mute); margin-top:6px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CLIProxy usage</h1>
+  <div class="ranges" id="ranges"></div>
+  <div class="spacer"></div>
+  <span class="mute" id="updated"></span>
+</header>
+<main>
+  <section class="panel"><div class="stats" id="stats"></div></section>
+  <section class="panel"><h2>Rate limits &amp; credits</h2><div class="creds" id="creds"></div></section>
+  <section class="panel"><h2>Tokens over time by provider</h2><div id="chart"></div><div class="legend" id="legend"></div></section>
+  <section class="panel"><h2>By model</h2><table id="models"></table></section>
+  <section class="panel"><h2>By client key</h2><table id="clients"></table></section>
+  <section class="panel"><h2>Recent requests</h2><table id="recent"></table></section>
+</main>
+<script>
+const COLORS = { claude:"#d97757", codex:"#10a37f", xai:"#8b8bff", antigravity:"#4285f4", "opencode-go":"#e5b13a", "opencode-zen":"#c678dd" };
+const pname = p => String(p ?? "").replace(/^openai-compatible-/, "");
+const palette = ["#56b6c2","#e06c75","#98c379","#d19a66","#61afef","#be5046"];
+const CLIENTS = {}; // client_key_id -> friendly name, filled from /api/limits-free config below
+let range = localStorage.getItem("cpa-range") || "24h";
+const fmt = n => n == null ? "–" : Math.abs(n) >= 1e9 ? (n/1e9).toFixed(2)+"B" : Math.abs(n) >= 1e6 ? (n/1e6).toFixed(2)+"M" : Math.abs(n) >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(Math.round(n));
+const color = (p, i) => COLORS[pname(p)] || palette[i % palette.length];
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function ranges() {
+  document.getElementById("ranges").innerHTML = ["1h","24h","7d","30d"].map(r =>
+    `<button class="${r===range?"on":""}" data-r="${r}">${r}</button>`).join(" ");
+  document.querySelectorAll("#ranges button").forEach(b => b.onclick = () => { range = b.dataset.r; localStorage.setItem("cpa-range", range); ranges(); load(); });
+}
+
+function meter(label, frac, sub) {
+  const pct = Math.max(0, Math.min(1, frac)) * 100;
+  const c = pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--ok)";
+  return `<div class="meter"><div class="lab"><span>${esc(label)}</span><span>${pct.toFixed(0)}%${sub ? " · " + esc(sub) : ""}</span></div><div class="bar"><i style="width:${pct}%;background:${c}"></i></div></div>`;
+}
+const until = epoch => { const s = Number(epoch) - Date.now()/1000; if (!isFinite(s)) return ""; if (s <= 0) return "resetting"; const h = Math.floor(s/3600), m = Math.floor(s%3600/60); return `resets in ${h ? h+"h " : ""}${m}m`; };
+
+function credCard(c) {
+  if (c.error) return `<div class="cred bad">${esc(c.error)}</div>`;
+  const s = c.signals || {}; const get = k => { const f = Object.keys(s).find(x => x.toLowerCase() === k.toLowerCase()); return f ? s[f] : undefined; };
+  let body = "";
+  // Anthropic unified limits (Claude subscription)
+  for (const [w, name] of [["5h","5-hour"],["7d","7-day"]]) {
+    const u = get(`anthropic-ratelimit-unified-${w}-utilization`);
+    if (u !== undefined) body += meter(`${name} window`, Number(u), until(get(`anthropic-ratelimit-unified-${w}-reset`)));
+  }
+  // Codex credits / usage windows
+  const credits = get("x-codex-credits-balance");
+  if (credits !== undefined) body += `<div class="stat"><div class="v">${Number(credits).toLocaleString(undefined,{maximumFractionDigits:0})}</div><div class="k">Codex credits remaining${get("x-codex-active-limit") ? " · " + esc(get("x-codex-active-limit")) : ""}</div></div>`;
+  for (const k of Object.keys(s)) {
+    const m = k.match(/^x-codex-(primary|secondary)-used-percent$/i);
+    if (m) body += meter(`${m[1]} window (plan)`, Number(s[k]) / 100, get(`x-codex-${m[1]}-reset-after-seconds`) ? until(Date.now()/1000 + Number(get(`x-codex-${m[1]}-reset-after-seconds`))) : "");
+  }
+  // Generic remaining/limit pairs (xAI, OpenAI-style)
+  for (const k of Object.keys(s)) {
+    const m = k.match(/^(.*)-remaining-(requests|tokens)$/i) || k.match(/^(.*ratelimit)-remaining(-.+)?$/i);
+    if (!m || /anthropic-ratelimit-unified/i.test(k)) continue;
+    const limK = k.replace(/remaining/i, "limit"); const lim = Number(get(limK)); const rem = Number(s[k]);
+    if (lim > 0 && isFinite(rem)) body += meter(k.replace(/^x-ratelimit-/i, ""), 1 - rem / lim, `${fmt(rem)} left`);
+  }
+  if (!body) body = `<div class="mute">No limit headers seen yet${c.last_seen ? "" : " (no traffic yet)"}.</div>`;
+  const cds = (c.cooldowns || []).map(d => `<div class="mute">cooldown: ${esc(d.model)} – ${esc(d.reason)} (${Math.round((d.remaining_s||0)/60)}m)</div>`).join("");
+  const ok = (c.recent || []).reduce((a, r) => a + (r.success || 0), 0), bad = (c.recent || []).reduce((a, r) => a + (r.failed || 0), 0);
+  const raw = Object.keys(s).length ? `<details><summary>raw signals</summary><pre>${esc(JSON.stringify(s, null, 1))}</pre></details>` : "";
+  return `<div class="cred"><div class="top"><strong style="color:${color(c.provider,0)}">${esc(pname(c.provider))}</strong><span class="mute">${esc(String(c.label).replace(/^openai-compatibility:/, "api key "))}</span></div>
+    ${body}${cds}<div class="mute">${c.disabled ? '<span class="bad">disabled</span> · ' : ""}recent: <span class="ok">${ok} ok</span> / <span class="${bad?"bad":""}">${bad} failed</span></div>${raw}</div>`;
+}
+
+function chart(series) {
+  const el = document.getElementById("chart");
+  if (!series.length) { el.innerHTML = '<div class="mute">No traffic in range.</div>'; document.getElementById("legend").innerHTML = ""; return; }
+  const ts = [...new Set(series.map(r => +r.t))].sort((a,b) => a-b);
+  const provs = [...new Set(series.map(r => r.provider))];
+  const val = {}; series.forEach(r => { val[r.t + "|" + r.provider] = +r.tokens; });
+  const stacks = ts.map(t => { let acc = 0; return provs.map(p => { const v = val[t + "|" + p] || 0; const seg = [acc, acc + v]; acc += v; return seg; }); });
+  const max = Math.max(1, ...stacks.map(s => s.length ? s[s.length-1][1] : 0));
+  const W = el.clientWidth || 900, H = 220, L = 50, B = 22, bw = Math.min(48, Math.max(2, (W - L - 10) / ts.length - 2));
+  const x = i => L + i * ((W - L - 10) / ts.length), y = v => H - B - (v / max) * (H - B - 10);
+  let svg = `<svg width="${W}" height="${H}">`;
+  for (let g = 0; g <= 4; g++) { const v = max * g / 4; svg += `<line x1="${L}" x2="${W-10}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${fmt(v)}</text>`; }
+  stacks.forEach((s, i) => s.forEach(([a, b], j) => { if (b > a) svg += `<rect x="${x(i)}" y="${y(b)}" width="${bw}" height="${y(a)-y(b)}" fill="${color(provs[j], j)}"><title>${pname(provs[j])}: ${fmt(b-a)} tokens · ${new Date(ts[i]*1000).toLocaleString()}</title></rect>`; }));
+  const step = Math.max(1, Math.ceil(ts.length / 8));
+  ts.forEach((t, i) => { if (i % step === 0) { const d = new Date(t*1000); svg += `<text x="${x(i)}" y="${H-6}">${range === "30d" ? d.toLocaleDateString(undefined,{month:"short",day:"numeric"}) : d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}</text>`; } });
+  el.innerHTML = svg + "</svg>";
+  document.getElementById("legend").innerHTML = provs.map((p, j) => `<span><i style="background:${color(p,j)}"></i>${esc(pname(p))}</span>`).join("");
+}
+
+function table(id, cols, rows) {
+  document.getElementById(id).innerHTML = `<tr>${cols.map(c => `<th class="${c.n?"n":""}">${c.h}</th>`).join("")}</tr>` +
+    (rows.length ? rows.map(r => `<tr>${cols.map(c => `<td class="${c.n?"n":""}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join("")}</tr>`).join("") : `<tr><td class="mute" colspan="${cols.length}">No data.</td></tr>`);
+}
+const clientName = id => CLIENTS[id] || id;
+
+async function load() {
+  try {
+    const [s, l] = await Promise.all([fetch(`/api/summary?range=${range}`).then(r => r.json()), fetch("/api/limits").then(r => r.json())]);
+    if (s.error) throw new Error(s.error);
+    const t = s.totals;
+    document.getElementById("stats").innerHTML = [
+      ["Requests", fmt(+t.requests)], ["Failures", `<span class="${+t.failures ? "bad" : ""}">${fmt(+t.failures)}</span>`],
+      ["Input tokens", fmt(+t.input)], ["Output tokens", fmt(+t.output)], ["Cached tokens", fmt(+t.cached)],
+      ["Reasoning tokens", fmt(+t.reasoning)], ["p50 latency", fmt(+t.p50_ms) + " ms"], ["p95 latency", fmt(+t.p95_ms) + " ms"],
+    ].map(([k, v]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+    document.getElementById("creds").innerHTML = (l.credentials || []).map(credCard).join("");
+    chart(s.series);
+    table("models", [
+      {h:"Provider", f:r => `<span class="pill" style="border-color:${color(r.provider,0)}">${esc(pname(r.provider))}</span>`}, {h:"Model", k:"model"},
+      {h:"Requests", n:1, f:r => fmt(+r.requests)}, {h:"Failed", n:1, f:r => +r.failures ? `<span class="bad">${r.failures}</span>` : "0"},
+      {h:"Input", n:1, f:r => fmt(+r.input)}, {h:"Output", n:1, f:r => fmt(+r.output)}, {h:"Cached", n:1, f:r => fmt(+r.cached)},
+      {h:"p50 ms", n:1, f:r => fmt(+r.p50_ms)}, {h:"TTFT ms", n:1, f:r => fmt(+r.ttft_ms)}], s.by_model);
+    table("clients", [{h:"Client key", f:r => esc(clientName(r.client_key_id))}, {h:"Requests", n:1, f:r => fmt(+r.requests)}, {h:"Tokens", n:1, f:r => fmt(+r.tokens)}], s.by_client);
+    table("recent", [{h:"Time (ET)", k:"at"}, {h:"Provider", f:r => esc(pname(r.provider))}, {h:"Model", k:"model"}, {h:"Client", f:r => esc(clientName(r.client_key_id))},
+      {h:"In", n:1, f:r => fmt(+r.input_tokens)}, {h:"Out", n:1, f:r => fmt(+r.output_tokens)}, {h:"ms", n:1, f:r => fmt(+r.latency_ms)},
+      {h:"Status", f:r => +r.failed ? `<span class="bad">${r.status_code || "fail"} ${esc(r.error_code)}</span>` : `<span class="ok">ok</span>`}], s.recent);
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("updated").innerHTML = `<span class="bad">${esc(e.message)}</span>`;
+  }
+}
+fetch("/api/clients").then(r => r.ok ? r.json() : {}).then(c => Object.assign(CLIENTS, c)).catch(() => {}).finally(() => { ranges(); load(); setInterval(load, 30000); });
+</script>
+</body>
+</html>
