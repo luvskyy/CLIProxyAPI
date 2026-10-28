@@ -3,6 +3,7 @@ package clickhouse
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/bodycapture"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -115,8 +115,8 @@ func CaptureMiddleware() gin.HandlerFunc {
 			return
 		}
 		requestURL := c.Request.URL.Path
-		if masked := util.MaskSensitiveQuery(c.Request.URL.RawQuery); masked != "" {
-			requestURL += "?" + masked
+		if redacted := redactQuery(c.Request.URL.Query()); redacted != "" {
+			requestURL += "?" + redacted
 		}
 		clientKey := coreusage.APIKeyFromContext(c.Request.Context())
 		if clientKey == "" {
@@ -149,5 +149,22 @@ func shouldCapture(req *http.Request) bool {
 		return false
 	}
 	path := req.URL.Path
+	// Realtime client-secret/session responses carry short-lived credentials.
+	if strings.Contains(path, "/realtime/client_secrets") || strings.Contains(path, "/realtime/sessions") {
+		return false
+	}
 	return !strings.HasPrefix(path, "/v0/management") && !strings.HasPrefix(path, "/v8/management") && !strings.HasPrefix(path, "/management")
+}
+
+// redactQuery fully replaces sensitive query values (client keys may arrive as ?key=).
+func redactQuery(values url.Values) string {
+	if len(values) == 0 {
+		return ""
+	}
+	for name := range values {
+		if isSensitiveHeader(name) || strings.EqualFold(name, "auth_token") {
+			values[name] = []string{"[REDACTED]"}
+		}
+	}
+	return values.Encode()
 }
